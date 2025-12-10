@@ -38,7 +38,9 @@ import {
   Send,
   Home,
   User,
-  Power
+  Power,
+  Key,
+  Info
 } from 'lucide-react';
 import { Appointment, AppointmentStatus, ShopSettings } from './types';
 import { getToken } from 'firebase/messaging';
@@ -67,26 +69,24 @@ const formatDate = (dateStr: string) => {
 
 const getStatusColor = (status: AppointmentStatus) => {
   switch (status) {
-    case 'accepted': return 'text-[#04D361] bg-[#04D361]/10 border-[#04D361]/20';
-    case 'cancelled': return 'text-textSecondary bg-surfaceHover border-surfaceHover';
-    case 'pending': return 'text-warning bg-warning/10 border-warning/20';
-    case 'waiting_approval': return 'text-warning bg-warning/10 border-warning/20';
-    case 'suggestion_sent': return 'text-info bg-info/10 border-info/20';
-    case 'completed': return 'text-primary bg-primary/10 border-primary/20';
-    case 'rejected': return 'text-danger bg-danger/10 border-danger/20';
+    case 'aceito': return 'text-[#04D361] bg-[#04D361]/10 border-[#04D361]/20';
+    case 'cancelado': return 'text-textSecondary bg-surfaceHover border-surfaceHover';
+    case 'aguardando_aprovacao': return 'text-warning bg-warning/10 border-warning/20';
+    case 'aguardando_nova_aprovacao': return 'text-warning bg-warning/10 border-warning/20';
+    case 'sugestao_enviada_admin': return 'text-info bg-info/10 border-info/20';
+    case 'concluido': return 'text-primary bg-primary/10 border-primary/20';
     default: return 'text-textSecondary';
   }
 };
 
 const getStatusLabel = (status: AppointmentStatus) => {
   switch (status) {
-    case 'accepted': return 'Aceito';
-    case 'cancelled': return 'Cancelado';
-    case 'pending': return 'Pendente';
-    case 'waiting_approval': return 'Aguardando aprovação';
-    case 'suggestion_sent': return 'Sugestão enviada';
-    case 'completed': return 'Concluído';
-    case 'rejected': return 'Recusado';
+    case 'aceito': return 'Aceito';
+    case 'cancelado': return 'Cancelado';
+    case 'aguardando_aprovacao': return 'Pendente';
+    case 'aguardando_nova_aprovacao': return 'Aguardando aprovação'; // Remarcação
+    case 'sugestao_enviada_admin': return 'Sugestão enviada';
+    case 'concluido': return 'Concluído';
     default: return status;
   }
 };
@@ -115,10 +115,10 @@ const Button = ({ children, onClick, variant = 'primary', className = '', disabl
 };
 
 const Input = ({ label, ...props }: any) => (
-  <div className="flex flex-col gap-1.5 mb-4">
+  <div className="flex flex-col gap-1.5 mb-4 w-full">
     {label && <label className="text-sm text-textSecondary font-medium">{label}</label>}
     <input 
-      className="bg-surface border border-surfaceHover rounded-lg px-4 py-3 text-text focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all placeholder:text-gray-600"
+      className="w-full bg-surface border border-surfaceHover rounded-lg px-4 py-3 text-text focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all placeholder:text-gray-600"
       {...props}
     />
   </div>
@@ -164,10 +164,18 @@ export default function App() {
   const [selectedDate, setSelectedDate] = useState('');
   const [selectedTime, setSelectedTime] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [rescheduleApp, setRescheduleApp] = useState<Appointment | null>(null);
 
   // Admin State
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
   const [adminTab, setAdminTab] = useState<'pending' | 'today' | 'upcoming' | 'all'>('pending');
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  
+  // Suggestion Modal State
+  const [showSuggestionModal, setShowSuggestionModal] = useState<Appointment | null>(null);
+  const [suggestionDate, setSuggestionDate] = useState('');
+  const [suggestionTime, setSuggestionTime] = useState('');
 
   // Load Settings
   useEffect(() => {
@@ -187,10 +195,7 @@ export default function App() {
 
   // Load Appointments
   useEffect(() => {
-    // IMPORTANT: Simplified query to avoid "Missing Index" errors on new projects.
-    // Sorting is done client-side below.
     const q = query(collection(db, 'appointments'));
-    
     const unsub = onSnapshot(q, (snapshot) => {
       const apps = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Appointment));
       
@@ -202,9 +207,6 @@ export default function App() {
       });
 
       setAppointments(apps);
-    }, (error) => {
-      console.error("Error loading appointments:", error);
-      alert("Erro ao carregar agendamentos. Verifique o console ou as regras do Firestore.");
     });
     return () => unsub();
   }, []);
@@ -238,21 +240,17 @@ export default function App() {
   const handleAdminLogin = async () => {
     try {
       setIsSubmitting(true);
-      // Attempt login
       await signInWithEmailAndPassword(auth, ADMIN_EMAIL, adminPasswordInput);
       setView('admin-dashboard');
     } catch (error: any) {
-      // If user doesn't exist, create it (First time setup for this demo)
       if (error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') {
-        try {
-          if (adminPasswordInput === '12345678') {
+        if (adminPasswordInput === '12345678') {
+           try {
              await createUserWithEmailAndPassword(auth, ADMIN_EMAIL, '12345678');
              setView('admin-dashboard');
-          } else {
-            alert('Senha incorreta!');
-          }
-        } catch (createError: any) {
-          alert('Erro ao criar admin: ' + createError.message);
+           } catch(e) {}
+        } else {
+          alert('Senha incorreta!');
         }
       } else {
         alert('Senha incorreta ou erro de login.');
@@ -267,10 +265,13 @@ export default function App() {
       try {
         await updatePassword(adminUser, newPass);
         alert('Senha atualizada com sucesso!');
+        return true;
       } catch (e) {
         alert('Erro ao atualizar senha. Faça login novamente.');
+        return false;
       }
     }
+    return false;
   };
 
   const toggleShopStatus = async () => {
@@ -283,7 +284,7 @@ export default function App() {
     if (settings.releasedClients?.includes(clientName)) return false;
 
     const lastCompleted = appointments
-      .filter(a => a.clientName === clientName && a.status === 'completed')
+      .filter(a => a.clientName === clientName && a.status === 'concluido')
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
 
     if (!lastCompleted) return false;
@@ -297,11 +298,11 @@ export default function App() {
   const hasActiveAppointment = () => {
     return appointments.some(a => 
       a.clientName === clientName && 
-      ['pending', 'accepted', 'waiting_approval', 'suggestion_sent'].includes(a.status)
+      ['aguardando_aprovacao', 'aceito', 'aguardando_nova_aprovacao', 'sugestao_enviada_admin'].includes(a.status)
     );
   };
 
-  const getAvailableSlots = (date: string) => {
+  const generateTimeSlots = (date: string) => {
     if (!date) return [];
     
     const dayOfWeek = new Date(date + 'T00:00:00').getDay(); // 0-6
@@ -314,17 +315,7 @@ export default function App() {
 
     while (currH * 60 + currM < endMinutes) {
       const timeString = `${String(currH).padStart(2, '0')}:${String(currM).padStart(2, '0')}`;
-      
-      // Check if booked
-      const isBooked = appointments.some(a => 
-        a.date === date && 
-        a.time === timeString && 
-        ['pending', 'accepted', 'waiting_approval', 'suggestion_sent', 'completed'].includes(a.status)
-      );
-
-      if (!isBooked) {
-        slots.push(timeString);
-      }
+      slots.push(timeString);
 
       currM += settings.intervalMinutes;
       if (currM >= 60) {
@@ -335,24 +326,49 @@ export default function App() {
     return slots;
   };
 
+  const isSlotBooked = (date: string, time: string, excludeAppId?: string) => {
+    return appointments.some(a => 
+      a.date === date && 
+      a.time === time && 
+      a.id !== excludeAppId && 
+      ['aguardando_aprovacao', 'aceito', 'aguardando_nova_aprovacao', 'sugestao_enviada_admin', 'concluido'].includes(a.status)
+    );
+  };
+
   const handleBooking = async () => {
     if (!selectedDate || !selectedTime) return;
     
+    if (isSlotBooked(selectedDate, selectedTime, rescheduleApp?.id)) {
+      alert('Este horário já está ocupado. Por favor, escolha outro.');
+      return;
+    }
+
     setIsSubmitting(true);
     try {
-      await addDoc(collection(db, 'appointments'), {
-        clientName,
-        date: selectedDate,
-        time: selectedTime,
-        status: 'pending',
-        createdAt: Date.now()
-      });
-      alert('Agendamento enviado com sucesso!');
+      if (rescheduleApp) {
+        await updateDoc(doc(db, 'appointments', rescheduleApp.id), {
+          date: selectedDate,
+          time: selectedTime,
+          status: 'aguardando_nova_aprovacao',
+          suggestionTime: null
+        });
+        alert('Agendamento remarcado com sucesso! Aguarde nova aprovação.');
+      } else {
+        await addDoc(collection(db, 'appointments'), {
+          clientName,
+          date: selectedDate,
+          time: selectedTime,
+          status: 'aguardando_aprovacao',
+          createdAt: Date.now()
+        });
+        alert('Agendamento enviado com sucesso!');
+      }
+      
       setView('home');
       setSelectedDate('');
       setSelectedTime('');
+      setRescheduleApp(null);
     } catch (e: any) {
-      console.error("Erro ao salvar no Firestore:", e);
       alert('Erro ao agendar: ' + e.message);
     } finally {
       setIsSubmitting(false);
@@ -366,7 +382,6 @@ export default function App() {
         ...extraData
       });
     } catch (e) {
-      console.error("Error updating status:", e);
       alert("Erro ao atualizar status");
     }
   };
@@ -381,7 +396,7 @@ export default function App() {
     }
   };
 
-  // --- RENDER HELPERS ---
+  // --- RENDER ---
 
   if (loading) return <div className="min-h-screen bg-background flex items-center justify-center text-primary">Carregando...</div>;
 
@@ -483,7 +498,6 @@ export default function App() {
 
     return (
       <div className="min-h-screen bg-background pb-20">
-        {/* Header */}
         <div className="bg-surface/50 backdrop-blur-md sticky top-0 z-30 border-b border-surfaceHover px-6 py-4 flex justify-between items-center">
           <div className="flex items-center gap-3">
              <div className="bg-primary p-2 rounded-full">
@@ -502,7 +516,6 @@ export default function App() {
 
         <div className="p-6 max-w-lg mx-auto space-y-6">
           
-          {/* Shop Status Banner */}
           {!settings.isOpen ? (
             <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-center gap-4">
               <div className="bg-red-500/20 p-2 rounded-full">
@@ -523,11 +536,13 @@ export default function App() {
             </div>
           ) : null}
 
-          {/* Main Action Area */}
           {view === 'home' ? (
             <>
               <Button 
-                onClick={() => setView('booking')}
+                onClick={() => {
+                  setRescheduleApp(null);
+                  setView('booking');
+                }}
                 disabled={!canBook}
                 className={!canBook ? 'opacity-50 grayscale' : ''}
               >
@@ -571,30 +586,67 @@ export default function App() {
                          </div>
                       </div>
 
-                      {/* Client Actions */}
-                      {app.status === 'suggestion_sent' && (
-                        <div className="mt-4 pt-4 border-t border-surfaceHover flex gap-2">
-                          <p className="text-xs text-info w-full mb-2">Admin sugeriu: {app.suggestionTime}</p>
-                          <Button 
-                            variant="success" 
-                            className="py-1 text-xs" 
-                            onClick={() => updateStatus(app.id, 'accepted', { time: app.suggestionTime })}
-                          >Aceitar</Button>
-                           <Button 
-                            variant="danger" 
-                            className="py-1 text-xs" 
-                            onClick={() => updateStatus(app.id, 'rejected')}
-                          >Recusar</Button>
+                      {app.status === 'sugestao_enviada_admin' && (
+                        <div className="mt-4 pt-4 border-t border-surfaceHover bg-surfaceHover/50 p-3 rounded-lg">
+                           <div className="flex items-center gap-2 mb-3">
+                              <Info size={16} className="text-info" />
+                              <div className="text-sm">
+                                 <p className="text-textSecondary text-xs">Sugestão do Barbeiro:</p>
+                                 <p className="font-bold text-info text-lg">{app.suggestionTime}</p>
+                              </div>
+                           </div>
+                           
+                           <div className="space-y-2">
+                              <Button 
+                                variant="success" 
+                                className="py-2 text-xs w-full" 
+                                onClick={() => updateStatus(app.id, 'aceito', { time: app.suggestionTime, suggestionTime: null })}
+                              >Aceitar Sugestão</Button>
+                              
+                              <div className="grid grid-cols-2 gap-2">
+                                <Button 
+                                  variant="danger" 
+                                  className="py-2 text-xs bg-danger/10 border-danger/20" 
+                                  onClick={() => updateStatus(app.id, 'aguardando_nova_aprovacao', { suggestionTime: null })}
+                                >Recusar</Button>
+                                
+                                <Button 
+                                  variant="secondary" 
+                                  className="py-2 text-xs"
+                                   onClick={() => {
+                                     setRescheduleApp(app);
+                                     setView('booking');
+                                   }}
+                                >Outro Horário</Button>
+                              </div>
+                           </div>
                         </div>
                       )}
 
-                      {['pending', 'accepted'].includes(app.status) && (
-                        <div className="mt-4 pt-4 border-t border-surfaceHover">
+                      {/* Reschedule Button */}
+                      {['aguardando_aprovacao', 'aceito', 'concluido'].includes(app.status) && (
+                         <div className="mt-4 pt-4 border-t border-surfaceHover">
+                           <Button 
+                             variant="secondary" 
+                             className="py-2 text-sm"
+                             onClick={() => {
+                               setRescheduleApp(app);
+                               setView('booking');
+                             }}
+                           >
+                             <RefreshCcw size={16} /> Remarcar
+                           </Button>
+                         </div>
+                      )}
+
+                      {/* Cancel Button (Only if not completed) */}
+                      {['aguardando_aprovacao', 'aceito'].includes(app.status) && (
+                        <div className="mt-3 flex justify-end">
                            <button 
-                             onClick={() => updateStatus(app.id, 'cancelled')}
+                             onClick={() => updateStatus(app.id, 'cancelado')}
                              className="text-xs text-danger hover:underline flex items-center gap-1"
                            >
-                             <XCircle size={12} /> Cancelar agendamento
+                             <XCircle size={12} /> Cancelar
                            </button>
                         </div>
                       )}
@@ -604,18 +656,18 @@ export default function App() {
               )}
             </>
           ) : (
-            // BOOKING FORM
             <div className="animate-fade-in">
               <div className="flex items-center gap-2 mb-6">
-                <button onClick={() => setView('home')} className="bg-surface p-2 rounded-lg border border-surfaceHover text-textSecondary hover:text-text">
+                <button onClick={() => { setView('home'); setRescheduleApp(null); }} className="bg-surface p-2 rounded-lg border border-surfaceHover text-textSecondary hover:text-text">
                   <ChevronLeft size={20} />
                 </button>
-                <h2 className="font-serif text-xl text-text">Novo Agendamento</h2>
+                <h2 className="font-serif text-xl text-text">
+                  {rescheduleApp ? 'Remarcar' : 'Novo Agendamento'}
+                </h2>
               </div>
 
               <Card>
                 <Input label="Nome" value={clientName} disabled />
-                
                 <div className="mb-4">
                   <label className="text-sm text-textSecondary font-medium mb-1.5 block">Data</label>
                   <input 
@@ -626,33 +678,37 @@ export default function App() {
                     className="w-full bg-surface border border-surfaceHover rounded-lg px-4 py-3 text-text focus:border-primary focus:ring-1 focus:ring-primary [color-scheme:dark]"
                   />
                 </div>
-
                 {selectedDate && (
                   <div className="mb-6">
                     <label className="text-sm text-textSecondary font-medium mb-1.5 block">Horários Disponíveis</label>
                     <div className="grid grid-cols-4 gap-2">
-                      {getAvailableSlots(selectedDate).map(time => (
-                        <button
-                          key={time}
-                          onClick={() => setSelectedTime(time)}
-                          className={`py-2 rounded border text-sm transition-all ${
-                            selectedTime === time 
-                              ? 'bg-primary text-background border-primary font-bold' 
-                              : 'bg-surfaceHover border-transparent text-text hover:border-primary/50'
-                          }`}
-                        >
-                          {time}
-                        </button>
-                      ))}
-                      {getAvailableSlots(selectedDate).length === 0 && (
+                      {generateTimeSlots(selectedDate).map(time => {
+                        const isTaken = isSlotBooked(selectedDate, time, rescheduleApp?.id);
+                        return (
+                          <button
+                            key={time}
+                            onClick={() => !isTaken && setSelectedTime(time)}
+                            disabled={isTaken}
+                            className={`py-2 rounded border text-sm transition-all relative ${
+                              isTaken 
+                                ? 'bg-surface border-transparent text-textSecondary line-through cursor-not-allowed opacity-50' 
+                                : selectedTime === time 
+                                  ? 'bg-primary text-background border-primary font-bold' 
+                                  : 'bg-surfaceHover border-transparent text-text hover:border-primary/50'
+                            }`}
+                          >
+                            {time}
+                          </button>
+                        );
+                      })}
+                      {generateTimeSlots(selectedDate).length === 0 && (
                         <p className="col-span-4 text-sm text-textSecondary text-center py-2">Sem horários para este dia.</p>
                       )}
                     </div>
                   </div>
                 )}
-
                 <Button onClick={handleBooking} disabled={!selectedDate || !selectedTime || isSubmitting}>
-                  {isSubmitting ? 'Enviando...' : 'Enviar Agendamento'}
+                  {isSubmitting ? 'Enviando...' : (rescheduleApp ? 'Confirmar Remarcação' : 'Enviar Agendamento')}
                 </Button>
               </Card>
             </div>
@@ -661,9 +717,9 @@ export default function App() {
           <div className="flex justify-center mt-8">
             <button 
               onClick={() => { localStorage.removeItem('barber_client_name'); setView('welcome'); }}
-              className="flex items-center gap-2 text-textSecondary text-sm hover:text-danger"
+              className="flex items-center gap-2 text-textSecondary text-sm hover:text-text transition-colors"
             >
-              <LogOut size={16} /> Sair / Trocar Nome
+              <ChevronLeft size={16} /> Voltar tela inicial
             </button>
           </div>
         </div>
@@ -673,34 +729,36 @@ export default function App() {
 
   // VIEW: ADMIN DASHBOARD
   if (view === 'admin-dashboard') {
-    // Admin Filters
     const filteredAppointments = appointments.filter(app => {
-      if (adminTab === 'pending') return app.status === 'pending' || app.status === 'waiting_approval';
+      if (adminTab === 'pending') return app.status === 'aguardando_aprovacao' || app.status === 'aguardando_nova_aprovacao' || app.status === 'sugestao_enviada_admin';
       if (adminTab === 'today') {
         const today = new Date().toISOString().split('T')[0];
-        return app.date === today && app.status !== 'cancelled' && app.status !== 'rejected';
+        return app.date === today && app.status !== 'cancelado';
       }
       if (adminTab === 'upcoming') {
         const today = new Date().toISOString().split('T')[0];
-        return app.date >= today && ['accepted', 'pending'].includes(app.status);
+        return app.date >= today && ['aceito', 'aguardando_aprovacao'].includes(app.status);
       }
-      return true; // All
+      return true;
     });
 
-    // Next Appointment Highlight
     const nextAppointment = appointments
-      .filter(a => a.status === 'accepted' && new Date(a.date + 'T' + a.time) > new Date())
+      .filter(a => a.status === 'aceito' && new Date(a.date + 'T' + a.time) > new Date())
       .sort((a, b) => new Date(a.date + 'T' + a.time).getTime() - new Date(b.date + 'T' + b.time).getTime())[0];
 
     return (
       <div className="min-h-screen bg-background">
-        {/* Admin Header */}
         <div className="bg-surface border-b border-surfaceHover px-6 py-4 flex justify-between items-center sticky top-0 z-40">
            <h1 className="font-serif text-lg text-primary font-bold">Painel Admin</h1>
            <div className="flex items-center gap-4">
              <button onClick={toggleShopStatus} className={`px-3 py-1 rounded text-xs font-bold border ${settings.isOpen ? 'text-success border-success bg-success/10' : 'text-danger border-danger bg-danger/10'}`}>
                {settings.isOpen ? 'LOJA ABERTA' : 'LOJA FECHADA'}
              </button>
+             
+             <button onClick={() => setShowPasswordModal(true)} className="text-textSecondary hover:text-text p-1" title="Alterar Senha">
+               <Key size={20} />
+             </button>
+
              <button onClick={() => { signOut(auth); setView('welcome'); }} className="text-textSecondary hover:text-text">
                Sair
              </button>
@@ -708,12 +766,10 @@ export default function App() {
         </div>
 
         <div className="p-6 max-w-4xl mx-auto space-y-6">
-          
-          {/* Stats Row */}
           <div className="grid grid-cols-2 gap-4">
              <Card className="flex items-center justify-between">
                <div>
-                 <span className="text-2xl font-bold text-text">{appointments.filter(a => a.status === 'pending').length}</span>
+                 <span className="text-2xl font-bold text-text">{appointments.filter(a => a.status === 'aguardando_aprovacao').length}</span>
                  <p className="text-xs text-textSecondary uppercase">Pendentes</p>
                </div>
                <div className="bg-warning/10 p-2 rounded-full text-warning"><Bell size={20} /></div>
@@ -727,7 +783,6 @@ export default function App() {
              </Card>
           </div>
 
-          {/* Next Appointment Highlight */}
           {nextAppointment && (
             <div className="bg-gradient-to-r from-primary/20 to-surface border border-primary/30 rounded-xl p-5 relative overflow-hidden">
                <div className="absolute top-0 right-0 p-4 opacity-10"><Scissors size={100} /></div>
@@ -743,13 +798,12 @@ export default function App() {
                  </div>
                  <Button 
                    className="w-auto px-6 py-2 text-sm"
-                   onClick={() => updateStatus(nextAppointment.id, 'completed')}
+                   onClick={() => updateStatus(nextAppointment.id, 'concluido')}
                  >Concluir</Button>
                </div>
             </div>
           )}
 
-          {/* Lists Tabs */}
           <div className="flex gap-2 overflow-x-auto pb-2 border-b border-surfaceHover">
             {['pending', 'today', 'upcoming', 'all'].map((tab) => (
               <button
@@ -766,7 +820,6 @@ export default function App() {
             ))}
           </div>
 
-          {/* List Content */}
           <div className="space-y-3">
              {filteredAppointments.length === 0 && (
                <p className="text-center text-textSecondary py-8">Nenhum agendamento nesta lista.</p>
@@ -788,28 +841,40 @@ export default function App() {
                         <span className="flex items-center gap-1"><Calendar size={12}/> {formatDate(app.date)}</span>
                         <span className="flex items-center gap-1"><Clock size={12}/> {app.time}</span>
                       </p>
+                      
+                      {app.status === 'aguardando_nova_aprovacao' && (
+                        <p className="text-xs text-warning font-bold mt-1 flex items-center gap-1">
+                          <RefreshCcw size={12} /> Cliente solicitou remarcação
+                        </p>
+                      )}
+                      
+                      {app.status === 'sugestao_enviada_admin' && (
+                        <p className="text-xs text-info font-bold mt-1 flex items-center gap-1">
+                          <Info size={12} /> Sugestão enviada para cliente
+                        </p>
+                      )}
                     </div>
                   </div>
 
-                  {/* Admin Actions */}
                   <div className="flex flex-wrap gap-2 md:justify-end">
-                    {app.status === 'pending' && (
+                    {(app.status === 'aguardando_aprovacao' || app.status === 'aguardando_nova_aprovacao') && (
                       <>
-                        <button onClick={() => updateStatus(app.id, 'accepted')} className="p-2 rounded bg-success/10 text-success border border-success/20 hover:bg-success/20">
-                          <CheckCircle size={18} />
+                        <button onClick={() => updateStatus(app.id, 'aceito')} className="flex items-center gap-1 px-3 py-2 rounded bg-success/10 text-success border border-success/20 hover:bg-success/20 transition-colors text-xs font-bold uppercase tracking-wide">
+                          <CheckCircle size={16} /> Aceitar
                         </button>
                         <button onClick={() => {
-                          const newTime = prompt("Sugerir novo horário (HH:MM):", app.time);
-                          if (newTime) updateStatus(app.id, 'suggestion_sent', { suggestionTime: newTime });
-                        }} className="p-2 rounded bg-info/10 text-info border border-info/20 hover:bg-info/20">
-                          <RefreshCcw size={18} />
+                          setSuggestionDate(app.date); // Use appointment date for suggestion context
+                          setSuggestionTime('');
+                          setShowSuggestionModal(app);
+                        }} className="flex items-center gap-1 px-3 py-2 rounded bg-info/10 text-info border border-info/20 hover:bg-info/20 transition-colors text-xs font-bold uppercase tracking-wide">
+                          <RefreshCcw size={16} /> Sugerir Horário
                         </button>
-                        <button onClick={() => updateStatus(app.id, 'rejected')} className="p-2 rounded bg-danger/10 text-danger border border-danger/20 hover:bg-danger/20">
-                          <XCircle size={18} />
+                        <button onClick={() => updateStatus(app.id, 'cancelado')} className="flex items-center gap-1 px-3 py-2 rounded bg-danger/10 text-danger border border-danger/20 hover:bg-danger/20 transition-colors text-xs font-bold uppercase tracking-wide">
+                          <XCircle size={16} /> Recusar
                         </button>
                       </>
                     )}
-                    {app.status === 'completed' && (
+                    {app.status === 'concluido' && (
                       <button 
                         onClick={() => releaseClient(app.clientName)} 
                         className="text-xs px-3 py-1 bg-surfaceHover rounded text-textSecondary hover:text-primary border border-transparent hover:border-primary"
@@ -821,8 +886,91 @@ export default function App() {
                </div>
              ))}
           </div>
-
         </div>
+
+        <Modal isOpen={showPasswordModal} onClose={() => setShowPasswordModal(false)} title="Alterar Senha de Admin">
+          <div className="space-y-4">
+             <p className="text-sm text-textSecondary">Digite a nova senha para o acesso administrativo.</p>
+             <Input 
+               type="password"
+               placeholder="Nova senha (mín. 6 caracteres)"
+               value={newPassword}
+               onChange={(e: any) => setNewPassword(e.target.value)}
+             />
+             <Button onClick={async () => {
+                if(newPassword.length < 6) {
+                  alert('A senha deve ter no mínimo 6 caracteres');
+                  return;
+                }
+                const success = await handleChangePassword(newPassword);
+                if (success) {
+                  setShowPasswordModal(false);
+                  setNewPassword('');
+                }
+             }}>
+               Salvar Nova Senha
+             </Button>
+          </div>
+        </Modal>
+
+        {/* Suggestion Modal with Grid */}
+        <Modal isOpen={!!showSuggestionModal} onClose={() => setShowSuggestionModal(null)} title="Sugerir Novo Horário">
+          <div className="space-y-4">
+             <p className="text-sm text-textSecondary">
+               Sugerir para <strong>{showSuggestionModal?.clientName}</strong> no dia:
+             </p>
+             <input 
+               type="date" 
+               className="w-full bg-surface border border-surfaceHover rounded-lg px-4 py-3 text-text focus:border-primary focus:ring-1 focus:ring-primary [color-scheme:dark]"
+               value={suggestionDate}
+               onChange={(e) => setSuggestionDate(e.target.value)}
+             />
+             
+             {suggestionDate && (
+               <div className="grid grid-cols-4 gap-2 max-h-60 overflow-y-auto">
+                 {generateTimeSlots(suggestionDate).map(time => {
+                   const isTaken = isSlotBooked(suggestionDate, time, showSuggestionModal?.id);
+                   return (
+                     <button
+                       key={time}
+                       onClick={() => !isTaken && setSuggestionTime(time)}
+                       disabled={isTaken}
+                       className={`py-2 rounded border text-xs transition-all ${
+                         isTaken 
+                           ? 'bg-surface border-transparent text-textSecondary line-through cursor-not-allowed opacity-50'
+                           : suggestionTime === time 
+                             ? 'bg-info text-background border-info font-bold' 
+                             : 'bg-surfaceHover border-transparent text-text hover:border-info/50'
+                       }`}
+                     >
+                       {time}
+                     </button>
+                   );
+                 })}
+               </div>
+             )}
+
+             <Button 
+               disabled={!suggestionTime}
+               onClick={() => {
+                if (showSuggestionModal && suggestionTime && suggestionDate) {
+                  // Validate conflict again before sending
+                  if (isSlotBooked(suggestionDate, suggestionTime, showSuggestionModal.id)) {
+                    alert('Este horário está ocupado.');
+                    return;
+                  }
+                  
+                  updateStatus(showSuggestionModal.id, 'sugestao_enviada_admin', { 
+                    suggestionTime: suggestionTime,
+                  });
+                  setShowSuggestionModal(null);
+                }
+             }}>
+               Enviar Sugestão {suggestionTime}
+             </Button>
+          </div>
+        </Modal>
+
       </div>
     );
   }

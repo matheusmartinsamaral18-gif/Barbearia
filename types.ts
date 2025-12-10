@@ -1,11 +1,11 @@
 export type AppointmentStatus = 
-  | 'pending'           // Aguardando aprovação
-  | 'accepted'          // Aceito (Verde)
-  | 'cancelled'         // Cancelado (Cinza)
-  | 'completed'         // Concluído
-  | 'waiting_approval'  // Aguardando nova aprovação (remarcação)
-  | 'suggestion_sent'   // Sugestão enviada (Azul)
-  | 'rejected';         // Recusado
+  | 'aguardando_aprovacao'          // Solicitado pelo cliente
+  | 'aceito'                        // Confirmado
+  | 'cancelado'                     // Cancelado pelo cliente ou admin
+  | 'concluido'                     // Serviço finalizado
+  | 'aguardando_nova_aprovacao'     // Cliente remarcou
+  | 'sugestao_enviada_admin'        // Admin sugeriu novo horário
+  | 'aguardando_resposta_cliente';  // Estado intermediário
 
 export interface Appointment {
   id: string;
@@ -16,16 +16,16 @@ export interface Appointment {
   createdAt: number;
   phone?: string;
   adminNote?: string;
-  suggestionTime?: string; // If admin suggests a new time
+  suggestionTime?: string; // Horário sugerido pelo admin
   deviceToken?: string;
 }
 
 export interface ShopSettings {
   isOpen: boolean;
-  openTime: string; // "09:00"
-  closeTime: string; // "19:00"
-  intervalMinutes: number; // e.g., 45
-  blockedDates: string[]; // ["2024-12-25"]
-  workDays: number[]; // [1, 2, 3, 4, 5, 6] (0=Sun, 6=Sat)
-  releasedClients?: string[]; // Names of clients who can bypass cooldown
+  openTime: string;
+  closeTime: string;
+  intervalMinutes: number;
+  blockedDates: string[];
+  workDays: number[];
+  releasedClients?: string[];
 }
