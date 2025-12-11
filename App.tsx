@@ -40,10 +40,14 @@ import {
   User,
   Power,
   Key,
-  Info
+  Info,
+  CalendarOff,
+  Trash2,
+  Users,
+  PlusCircle
 } from 'lucide-react';
 import { Appointment, AppointmentStatus, ShopSettings } from './types';
-import { getToken } from 'firebase/messaging';
+import { getToken, onMessage } from 'firebase/messaging';
 
 // --- CONSTANTS ---
 
@@ -56,13 +60,15 @@ const DEFAULT_SETTINGS: ShopSettings = {
   intervalMinutes: 40,
   blockedDates: [],
   workDays: [1, 2, 3, 4, 5, 6],
-  releasedClients: []
+  releasedClients: [],
+  lunchStart: "12:00",
+  lunchEnd: "13:00"
 };
 
 // --- UTILS ---
 
-const formatDate = (dateStr: string) => {
-  if (!dateStr) return '';
+const formatDate = (dateStr: any) => {
+  if (!dateStr || typeof dateStr !== 'string') return '';
   const date = new Date(dateStr + 'T00:00:00'); 
   return new Intl.DateTimeFormat('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' }).format(date);
 };
@@ -84,12 +90,22 @@ const getStatusLabel = (status: AppointmentStatus) => {
     case 'aceito': return 'Aceito';
     case 'cancelado': return 'Cancelado';
     case 'aguardando_aprovacao': return 'Pendente';
-    case 'aguardando_nova_aprovacao': return 'Aguardando aprovação'; // Remarcação
+    case 'aguardando_nova_aprovacao': return 'Aguardando aprovação'; 
     case 'sugestao_enviada_admin': return 'Sugestão enviada';
     case 'concluido': return 'Concluído';
     default: return status;
   }
 };
+
+const WEEKDAYS = [
+  { id: 0, label: 'Dom' },
+  { id: 1, label: 'Seg' },
+  { id: 2, label: 'Ter' },
+  { id: 3, label: 'Qua' },
+  { id: 4, label: 'Qui' },
+  { id: 5, label: 'Sex' },
+  { id: 6, label: 'Sáb' },
+];
 
 // --- COMPONENTS ---
 
@@ -118,7 +134,7 @@ const Input = ({ label, ...props }: any) => (
   <div className="flex flex-col gap-1.5 mb-4 w-full">
     {label && <label className="text-sm text-textSecondary font-medium">{label}</label>}
     <input 
-      className="w-full bg-surface border border-surfaceHover rounded-lg px-4 py-3 text-text focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all placeholder:text-gray-600"
+      className="w-full bg-surface border border-surfaceHover rounded-lg px-4 py-3 text-text focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all placeholder:text-gray-600 disabled:opacity-50"
       {...props}
     />
   </div>
@@ -134,14 +150,14 @@ const Modal = ({ isOpen, onClose, title, children }: any) => {
   if (!isOpen) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-      <div className="bg-[#121214] border border-surfaceHover w-full max-w-md rounded-2xl overflow-hidden shadow-2xl animate-fade-in">
-        <div className="p-4 border-b border-surfaceHover flex justify-between items-center bg-surface">
+      <div className="bg-[#121214] border border-surfaceHover w-full max-w-md rounded-2xl overflow-hidden shadow-2xl animate-fade-in max-h-[90vh] flex flex-col">
+        <div className="p-4 border-b border-surfaceHover flex justify-between items-center bg-surface shrink-0">
           <h3 className="font-serif font-bold text-lg text-primary">{title}</h3>
           <button onClick={onClose} className="text-textSecondary hover:text-text">
             <XCircle size={24} />
           </button>
         </div>
-        <div className="p-5 max-h-[80vh] overflow-y-auto">
+        <div className="p-5 overflow-y-auto">
           {children}
         </div>
       </div>
@@ -159,6 +175,7 @@ export default function App() {
   const [settings, setSettings] = useState<ShopSettings>(DEFAULT_SETTINGS);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fcmToken, setFcmToken] = useState<string | null>(null);
   
   // Booking Form State
   const [selectedDate, setSelectedDate] = useState('');
@@ -168,7 +185,7 @@ export default function App() {
 
   // Admin State
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
-  const [adminTab, setAdminTab] = useState<'pending' | 'today' | 'upcoming' | 'all'>('pending');
+  const [adminTab, setAdminTab] = useState<'pending' | 'today' | 'upcoming' | 'all' | 'clients' | 'config'>('pending');
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   
@@ -177,13 +194,23 @@ export default function App() {
   const [suggestionDate, setSuggestionDate] = useState('');
   const [suggestionTime, setSuggestionTime] = useState('');
 
+  // Manual Booking Modal State
+  const [showManualBookModal, setShowManualBookModal] = useState(false);
+  const [manualClientName, setManualClientName] = useState('');
+
+  // Settings Temp State
+  const [tempSettings, setTempSettings] = useState<ShopSettings>(DEFAULT_SETTINGS);
+  const [newHoliday, setNewHoliday] = useState('');
+
   // Load Settings
   useEffect(() => {
     const unsub = onSnapshot(doc(db, 'config', 'shop'), (doc) => {
       if (doc.exists()) {
-        setSettings(doc.data() as ShopSettings);
+        const data = doc.data() as ShopSettings;
+        setSettings(data);
+        setTempSettings(data); // Sync temp state
       } else {
-        setDoc(doc.ref, DEFAULT_SETTINGS); // Create if not exists
+        setDoc(doc.ref, DEFAULT_SETTINGS); 
       }
       setLoading(false);
     }, (error) => {
@@ -219,16 +246,40 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // Initialize Client
+  // Initialize Client & FCM
   useEffect(() => {
     const savedName = localStorage.getItem('barber_client_name');
     if (savedName) {
       setClientName(savedName);
       setView('home');
     }
+
+    const requestFCM = async () => {
+      try {
+        const messaging = await initMessaging();
+        if (messaging) {
+          const permission = await Notification.requestPermission();
+          if (permission === 'granted') {
+            const token = await getToken(messaging, { vapidKey: "BPp...YOUR_VAPID_KEY..." });
+            setFcmToken(token);
+            onMessage(messaging, (payload) => {
+              alert(`Nova notificação: ${payload.notification?.title} - ${payload.notification?.body}`);
+            });
+          }
+        }
+      } catch(e) {
+        console.log("FCM Error", e);
+      }
+    };
+    requestFCM();
+
   }, []);
 
   // --- ACTIONS ---
+
+  const sendPushNotification = async (token: string, title: string, body: string) => {
+    console.log("SENDING PUSH TO:", token, title, body);
+  };
 
   const handleClientLogin = () => {
     if (!clientName.trim()) return;
@@ -275,9 +326,19 @@ export default function App() {
   };
 
   const toggleShopStatus = async () => {
+    const newState = !settings.isOpen;
     await updateDoc(doc(db, 'config', 'shop'), {
-      isOpen: !settings.isOpen
+      isOpen: newState
     });
+  };
+
+  const saveSettings = async () => {
+    try {
+      await updateDoc(doc(db, 'config', 'shop'), tempSettings);
+      alert('Configurações salvas com sucesso!');
+    } catch (e) {
+      alert('Erro ao salvar configurações.');
+    }
   };
 
   const checkCooldown = () => {
@@ -305,15 +366,39 @@ export default function App() {
   const generateTimeSlots = (date: string) => {
     if (!date) return [];
     
+    // Check Holiday
+    if (settings.blockedDates.includes(date)) return [];
+
+    // Check Work Day
     const dayOfWeek = new Date(date + 'T00:00:00').getDay(); // 0-6
     if (!settings.workDays.includes(dayOfWeek)) return []; // Closed that day
 
     const slots = [];
     let [currH, currM] = settings.openTime.split(':').map(Number);
     const [endH, endM] = settings.closeTime.split(':').map(Number);
+    
+    // Lunch Break
+    let lunchStartH, lunchStartM, lunchEndH, lunchEndM;
+    if (settings.lunchStart && settings.lunchEnd) {
+       [lunchStartH, lunchStartM] = settings.lunchStart.split(':').map(Number);
+       [lunchEndH, lunchEndM] = settings.lunchEnd.split(':').map(Number);
+    }
+
     const endMinutes = endH * 60 + endM;
+    const lunchStartMinutes = lunchStartH !== undefined ? lunchStartH * 60 + lunchStartM! : -1;
+    const lunchEndMinutes = lunchEndH !== undefined ? lunchEndH * 60 + lunchEndM! : -1;
 
     while (currH * 60 + currM < endMinutes) {
+      const currentTotal = currH * 60 + currM;
+      
+      // Skip if inside lunch break
+      if (lunchStartMinutes !== -1 && currentTotal >= lunchStartMinutes && currentTotal < lunchEndMinutes) {
+         // Skip forward
+         currM += settings.intervalMinutes;
+         if (currM >= 60) { currH += Math.floor(currM/60); currM %= 60; }
+         continue;
+      }
+
       const timeString = `${String(currH).padStart(2, '0')}:${String(currM).padStart(2, '0')}`;
       slots.push(timeString);
 
@@ -359,7 +444,8 @@ export default function App() {
           date: selectedDate,
           time: selectedTime,
           status: 'aguardando_aprovacao',
-          createdAt: Date.now()
+          createdAt: Date.now(),
+          deviceToken: fcmToken
         });
         alert('Agendamento enviado com sucesso!');
       }
@@ -375,12 +461,35 @@ export default function App() {
     }
   };
 
-  const updateStatus = async (id: string, status: AppointmentStatus, extraData = {}) => {
+  const updateStatus = async (id: string, AppointmentStatus, extraData = {}) => {
     try {
       await updateDoc(doc(db, 'appointments', id), {
-        status,
+        status: AppointmentStatus,
         ...extraData
       });
+
+      const app = appointments.find(a => a.id === id);
+      if (app && app.deviceToken) {
+        let title = "Atualização no Agendamento";
+        let body = `Seu status mudou para: ${getStatusLabel(AppointmentStatus)}`;
+
+        if (AppointmentStatus === 'aceito') {
+           title = "Agendamento Aceito! ✅";
+           body = `Seu horário de ${app.time} foi confirmado.`;
+        } else if (AppointmentStatus === 'sugestao_enviada_admin') {
+           title = "Nova Sugestão 🕒";
+           body = `O barbeiro sugeriu um novo horário. Confira no app.`;
+        } else if (AppointmentStatus === 'concluido') {
+           title = "Atendimento Concluído ✂️";
+           body = "Obrigado pela preferência! Volte sempre.";
+        } else if (AppointmentStatus === 'cancelado') {
+           title = "Agendamento Recusado/Cancelado ❌";
+           body = "Seu agendamento foi cancelado.";
+        }
+
+        await sendPushNotification(app.deviceToken, title, body);
+      }
+
     } catch (e) {
       alert("Erro ao atualizar status");
     }
@@ -393,6 +502,33 @@ export default function App() {
         releasedClients: [...currentList, name]
       });
       alert(`Cliente ${name} liberado do cooldown!`);
+    }
+  };
+
+  const handleManualBooking = async () => {
+    if (!manualClientName || !selectedDate || !selectedTime) return;
+    
+    if (isSlotBooked(selectedDate, selectedTime)) {
+      alert('Este horário já está ocupado.');
+      return;
+    }
+
+    try {
+      await addDoc(collection(db, 'appointments'), {
+        clientName: manualClientName,
+        date: selectedDate,
+        time: selectedTime,
+        status: 'aceito',
+        createdAt: Date.now(),
+        adminNote: 'Agendamento manual'
+      });
+      alert('Agendamento manual criado com sucesso!');
+      setShowManualBookModal(false);
+      setManualClientName('');
+      setSelectedDate('');
+      setSelectedTime('');
+    } catch(e: any) {
+      alert('Erro: ' + e.message);
     }
   };
 
@@ -746,6 +882,15 @@ export default function App() {
       .filter(a => a.status === 'aceito' && new Date(a.date + 'T' + a.time) > new Date())
       .sort((a, b) => new Date(a.date + 'T' + a.time).getTime() - new Date(b.date + 'T' + b.time).getTime())[0];
 
+    // Unique Clients Logic
+    const uniqueClients = Array.from(new Set(appointments.map(a => a.clientName))).map(name => {
+      const history = appointments.filter(a => a.clientName === name);
+      // Sort history desc
+      history.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      const lastApp = history[0];
+      return { name, history, lastApp };
+    });
+
     return (
       <div className="min-h-screen bg-background">
         <div className="bg-surface border-b border-surfaceHover px-6 py-4 flex justify-between items-center sticky top-0 z-40">
@@ -755,6 +900,10 @@ export default function App() {
                {settings.isOpen ? 'LOJA ABERTA' : 'LOJA FECHADA'}
              </button>
              
+             <button onClick={() => setAdminTab('config')} className="text-textSecondary hover:text-text p-1" title="Configurações">
+               <Settings size={20} />
+             </button>
+
              <button onClick={() => setShowPasswordModal(true)} className="text-textSecondary hover:text-text p-1" title="Alterar Senha">
                <Key size={20} />
              </button>
@@ -766,126 +915,251 @@ export default function App() {
         </div>
 
         <div className="p-6 max-w-4xl mx-auto space-y-6">
-          <div className="grid grid-cols-2 gap-4">
-             <Card className="flex items-center justify-between">
-               <div>
-                 <span className="text-2xl font-bold text-text">{appointments.filter(a => a.status === 'aguardando_aprovacao').length}</span>
-                 <p className="text-xs text-textSecondary uppercase">Pendentes</p>
-               </div>
-               <div className="bg-warning/10 p-2 rounded-full text-warning"><Bell size={20} /></div>
-             </Card>
-             <Card className="flex items-center justify-between">
-               <div>
-                 <span className="text-2xl font-bold text-text">{appointments.filter(a => a.date === new Date().toISOString().split('T')[0]).length}</span>
-                 <p className="text-xs text-textSecondary uppercase">Hoje</p>
-               </div>
-               <div className="bg-primary/10 p-2 rounded-full text-primary"><Calendar size={20} /></div>
-             </Card>
-          </div>
-
-          {nextAppointment && (
-            <div className="bg-gradient-to-r from-primary/20 to-surface border border-primary/30 rounded-xl p-5 relative overflow-hidden">
-               <div className="absolute top-0 right-0 p-4 opacity-10"><Scissors size={100} /></div>
-               <h3 className="text-primary font-serif font-bold text-lg mb-4 flex items-center gap-2">
-                 <RefreshCcw size={18} className="animate-spin-slow" /> Próximo Atendimento
-               </h3>
-               <div className="flex justify-between items-end relative z-10">
-                 <div>
-                   <h2 className="text-2xl text-text font-bold">{nextAppointment.clientName}</h2>
-                   <p className="text-textSecondary mt-1 flex items-center gap-2">
-                     <Clock size={16} /> {nextAppointment.time} - {formatDate(nextAppointment.date)}
-                   </p>
-                 </div>
-                 <Button 
-                   className="w-auto px-6 py-2 text-sm"
-                   onClick={() => updateStatus(nextAppointment.id, 'concluido')}
-                 >Concluir</Button>
-               </div>
-            </div>
+          
+          {/* Create Manual Button */}
+          {adminTab === 'pending' && (
+             <div className="flex justify-end">
+               <Button className="w-auto px-4 py-2" onClick={() => setShowManualBookModal(true)}>
+                 <PlusCircle size={18} /> Novo Agendamento
+               </Button>
+             </div>
           )}
 
-          <div className="flex gap-2 overflow-x-auto pb-2 border-b border-surfaceHover">
-            {['pending', 'today', 'upcoming', 'all'].map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setAdminTab(tab as any)}
-                className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
-                  adminTab === tab 
-                    ? 'bg-primary text-background' 
-                    : 'text-textSecondary hover:text-text bg-surfaceHover/50'
-                }`}
-              >
-                {tab === 'pending' ? 'Pendentes' : tab === 'today' ? 'Hoje' : tab === 'upcoming' ? 'Próximos' : 'Todos'}
-              </button>
-            ))}
-          </div>
-
-          <div className="space-y-3">
-             {filteredAppointments.length === 0 && (
-               <p className="text-center text-textSecondary py-8">Nenhum agendamento nesta lista.</p>
-             )}
-             {filteredAppointments.map(app => (
-               <div key={app.id} className="bg-surface border border-surfaceHover rounded-lg p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div className="flex items-start gap-4">
-                    <div className="bg-surfaceHover p-3 rounded-full">
-                      <User className="text-textSecondary" />
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-text flex items-center gap-2">
-                        {app.clientName}
-                        <span className={`text-[10px] px-2 py-0.5 rounded-full border ${getStatusColor(app.status)}`}>
-                          {getStatusLabel(app.status)}
-                        </span>
-                      </h4>
-                      <p className="text-sm text-textSecondary flex items-center gap-3 mt-1">
-                        <span className="flex items-center gap-1"><Calendar size={12}/> {formatDate(app.date)}</span>
-                        <span className="flex items-center gap-1"><Clock size={12}/> {app.time}</span>
-                      </p>
-                      
-                      {app.status === 'aguardando_nova_aprovacao' && (
-                        <p className="text-xs text-warning font-bold mt-1 flex items-center gap-1">
-                          <RefreshCcw size={12} /> Cliente solicitou remarcação
-                        </p>
-                      )}
-                      
-                      {app.status === 'sugestao_enviada_admin' && (
-                        <p className="text-xs text-info font-bold mt-1 flex items-center gap-1">
-                          <Info size={12} /> Sugestão enviada para cliente
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2 md:justify-end">
-                    {(app.status === 'aguardando_aprovacao' || app.status === 'aguardando_nova_aprovacao') && (
-                      <>
-                        <button onClick={() => updateStatus(app.id, 'aceito')} className="flex items-center gap-1 px-3 py-2 rounded bg-success/10 text-success border border-success/20 hover:bg-success/20 transition-colors text-xs font-bold uppercase tracking-wide">
-                          <CheckCircle size={16} /> Aceitar
-                        </button>
-                        <button onClick={() => {
-                          setSuggestionDate(app.date); // Use appointment date for suggestion context
-                          setSuggestionTime('');
-                          setShowSuggestionModal(app);
-                        }} className="flex items-center gap-1 px-3 py-2 rounded bg-info/10 text-info border border-info/20 hover:bg-info/20 transition-colors text-xs font-bold uppercase tracking-wide">
-                          <RefreshCcw size={16} /> Sugerir Horário
-                        </button>
-                        <button onClick={() => updateStatus(app.id, 'cancelado')} className="flex items-center gap-1 px-3 py-2 rounded bg-danger/10 text-danger border border-danger/20 hover:bg-danger/20 transition-colors text-xs font-bold uppercase tracking-wide">
-                          <XCircle size={16} /> Recusar
-                        </button>
-                      </>
-                    )}
-                    {app.status === 'concluido' && (
-                      <button 
-                        onClick={() => releaseClient(app.clientName)} 
-                        className="text-xs px-3 py-1 bg-surfaceHover rounded text-textSecondary hover:text-primary border border-transparent hover:border-primary"
-                      >
-                        Liberar Cliente (Reset 10d)
-                      </button>
-                    )}
-                  </div>
+          {adminTab === 'config' ? (
+            <div className="animate-fade-in space-y-6">
+               <div className="flex items-center gap-2 mb-4">
+                  <button onClick={() => setAdminTab('pending')}><ChevronLeft/></button>
+                  <h2 className="text-xl font-bold">Configurações da Loja</h2>
                </div>
-             ))}
-          </div>
+
+               <Card>
+                 <h3 className="font-bold text-lg mb-4 text-primary">Horário de Funcionamento</h3>
+                 <div className="grid grid-cols-2 gap-4">
+                    <Input label="Abertura" type="time" value={tempSettings.openTime} onChange={(e: any) => setTempSettings({...tempSettings, openTime: e.target.value})} />
+                    <Input label="Fechamento" type="time" value={tempSettings.closeTime} onChange={(e: any) => setTempSettings({...tempSettings, closeTime: e.target.value})} />
+                 </div>
+                 <Input label="Intervalo entre Cortes (minutos)" type="number" value={tempSettings.intervalMinutes} onChange={(e: any) => setTempSettings({...tempSettings, intervalMinutes: parseInt(e.target.value)})} />
+               </Card>
+
+               <Card>
+                 <h3 className="font-bold text-lg mb-4 text-primary">Dias de Trabalho</h3>
+                 <div className="flex flex-wrap gap-2">
+                   {WEEKDAYS.map(day => (
+                     <button
+                       key={day.id}
+                       onClick={() => {
+                         const current = tempSettings.workDays;
+                         if (current.includes(day.id)) {
+                           setTempSettings({...tempSettings, workDays: current.filter(d => d !== day.id)});
+                         } else {
+                           setTempSettings({...tempSettings, workDays: [...current, day.id]});
+                         }
+                       }}
+                       className={`px-3 py-2 rounded text-sm border transition-all ${
+                         tempSettings.workDays.includes(day.id) 
+                           ? 'bg-primary text-background border-primary font-bold' 
+                           : 'bg-surface border-surfaceHover text-textSecondary hover:border-primary/50'
+                       }`}
+                     >
+                       {day.label}
+                     </button>
+                   ))}
+                 </div>
+               </Card>
+
+               <Card>
+                 <h3 className="font-bold text-lg mb-4 text-primary">Pausa / Almoço</h3>
+                 <div className="grid grid-cols-2 gap-4">
+                    <Input label="Início" type="time" value={tempSettings.lunchStart || ''} onChange={(e: any) => setTempSettings({...tempSettings, lunchStart: e.target.value})} />
+                    <Input label="Fim" type="time" value={tempSettings.lunchEnd || ''} onChange={(e: any) => setTempSettings({...tempSettings, lunchEnd: e.target.value})} />
+                 </div>
+               </Card>
+
+               <Card>
+                 <h3 className="font-bold text-lg mb-4 text-primary">Feriados / Dias Bloqueados</h3>
+                 <div className="flex gap-2 mb-4">
+                   <input type="date" className="bg-surface border border-surfaceHover rounded px-3 py-2" value={newHoliday} onChange={(e) => setNewHoliday(e.target.value)} />
+                   <Button className="w-auto px-4 py-2" onClick={() => {
+                     if (newHoliday && !tempSettings.blockedDates.includes(newHoliday)) {
+                       setTempSettings({...tempSettings, blockedDates: [...tempSettings.blockedDates, newHoliday]});
+                       setNewHoliday('');
+                     }
+                   }}>Adicionar</Button>
+                 </div>
+                 <div className="flex flex-wrap gap-2">
+                   {tempSettings.blockedDates.map(date => (
+                     <div key={date} className="bg-surfaceHover px-3 py-1 rounded-full text-xs flex items-center gap-2 border border-surfaceHover">
+                       <CalendarOff size={12} /> {formatDate(date)}
+                       <button onClick={() => setTempSettings({...tempSettings, blockedDates: tempSettings.blockedDates.filter(d => d !== date)})} className="text-danger hover:text-white"><XCircle size={14}/></button>
+                     </div>
+                   ))}
+                 </div>
+               </Card>
+
+               <Button onClick={saveSettings}>Salvar Configurações</Button>
+            </div>
+          ) : adminTab === 'clients' ? (
+            <div className="animate-fade-in">
+              <div className="flex items-center gap-2 mb-4">
+                  <button onClick={() => setAdminTab('pending')}><ChevronLeft/></button>
+                  <h2 className="text-xl font-bold">Gerenciar Clientes</h2>
+              </div>
+              <div className="space-y-4">
+                {uniqueClients.length === 0 && <p className="text-textSecondary text-center">Nenhum cliente registrado.</p>}
+                {uniqueClients.map(c => (
+                  <div key={c.name} className="bg-surface border border-surfaceHover p-4 rounded-lg flex justify-between items-center">
+                    <div>
+                      <h3 className="font-bold text-lg text-text flex items-center gap-2">
+                        <Users size={18} className="text-primary"/> {c.name}
+                      </h3>
+                      <p className="text-sm text-textSecondary mt-1">Último corte: {c.lastApp ? formatDate(c.lastApp.date) : 'N/A'}</p>
+                      <p className="text-xs text-textSecondary">Total de visitas: {c.history.filter(h => h.status === 'concluido').length}</p>
+                    </div>
+                    
+                    <button 
+                      onClick={() => releaseClient(c.name)}
+                      className="px-3 py-2 bg-surfaceHover border border-surfaceHover rounded hover:border-primary text-xs transition-all text-textSecondary hover:text-white"
+                    >
+                      Liberar Bloqueio (10d)
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-4">
+                <Card className="flex items-center justify-between">
+                  <div>
+                    <span className="text-2xl font-bold text-text">{appointments.filter(a => a.status === 'aguardando_aprovacao').length}</span>
+                    <p className="text-xs text-textSecondary uppercase">Pendentes</p>
+                  </div>
+                  <div className="bg-warning/10 p-2 rounded-full text-warning"><Bell size={20} /></div>
+                </Card>
+                <Card className="flex items-center justify-between">
+                  <div>
+                    <span className="text-2xl font-bold text-text">{appointments.filter(a => a.date === new Date().toISOString().split('T')[0]).length}</span>
+                    <p className="text-xs text-textSecondary uppercase">Hoje</p>
+                  </div>
+                  <div className="bg-primary/10 p-2 rounded-full text-primary"><Calendar size={20} /></div>
+                </Card>
+              </div>
+
+              {nextAppointment && (
+                <div className="bg-gradient-to-r from-primary/20 to-surface border border-primary/30 rounded-xl p-5 relative overflow-hidden mt-6">
+                  <div className="absolute top-0 right-0 p-4 opacity-10"><Scissors size={100} /></div>
+                  <h3 className="text-primary font-serif font-bold text-lg mb-4 flex items-center gap-2">
+                    <RefreshCcw size={18} className="animate-spin-slow" /> Próximo Atendimento
+                  </h3>
+                  <div className="flex justify-between items-end relative z-10">
+                    <div>
+                      <h2 className="text-2xl text-text font-bold">{nextAppointment.clientName}</h2>
+                      <p className="text-textSecondary mt-1 flex items-center gap-2">
+                        <Clock size={16} /> {nextAppointment.time} - {formatDate(nextAppointment.date)}
+                      </p>
+                    </div>
+                    <Button 
+                      className="w-auto px-6 py-2 text-sm"
+                      onClick={() => updateStatus(nextAppointment.id, 'concluido')}
+                    >Concluir</Button>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2 overflow-x-auto pb-2 border-b border-surfaceHover mt-6">
+                {[
+                  { id: 'pending', label: 'Pendentes' },
+                  { id: 'today', label: 'Hoje' },
+                  { id: 'upcoming', label: 'Próximos' },
+                  { id: 'all', label: 'Todos' },
+                  { id: 'clients', label: 'Clientes' }
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setAdminTab(tab.id as any)}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
+                      adminTab === tab.id 
+                        ? 'bg-primary text-background' 
+                        : 'text-textSecondary hover:text-text bg-surfaceHover/50'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="space-y-3 mt-4">
+                {adminTab !== 'clients' && adminTab !== 'config' && (
+                  <>
+                    {filteredAppointments.length === 0 && (
+                      <p className="text-center text-textSecondary py-8">Nenhum agendamento nesta lista.</p>
+                    )}
+                    {filteredAppointments.map(app => (
+                      <div key={app.id} className="bg-surface border border-surfaceHover rounded-lg p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                          <div className="flex items-start gap-4">
+                            <div className="bg-surfaceHover p-3 rounded-full">
+                              <User className="text-textSecondary" />
+                            </div>
+                            <div>
+                              <h4 className="font-bold text-text flex items-center gap-2">
+                                {app.clientName}
+                                <span className={`text-[10px] px-2 py-0.5 rounded-full border ${getStatusColor(app.status)}`}>
+                                  {getStatusLabel(app.status)}
+                                </span>
+                              </h4>
+                              <p className="text-sm text-textSecondary flex items-center gap-3 mt-1">
+                                <span className="flex items-center gap-1"><Calendar size={12}/> {formatDate(app.date)}</span>
+                                <span className="flex items-center gap-1"><Clock size={12}/> {app.time}</span>
+                              </p>
+                              
+                              {app.status === 'aguardando_nova_aprovacao' && (
+                                <p className="text-xs text-warning font-bold mt-1 flex items-center gap-1">
+                                  <RefreshCcw size={12} /> Cliente solicitou remarcação
+                                </p>
+                              )}
+                              
+                              {app.status === 'sugestao_enviada_admin' && (
+                                <p className="text-xs text-info font-bold mt-1 flex items-center gap-1">
+                                  <Info size={12} /> Sugestão enviada para cliente
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap gap-2 md:justify-end">
+                            {(app.status === 'aguardando_aprovacao' || app.status === 'aguardando_nova_aprovacao') && (
+                              <>
+                                <button onClick={() => updateStatus(app.id, 'aceito')} className="flex items-center gap-1 px-3 py-2 rounded bg-success/10 text-success border border-success/20 hover:bg-success/20 transition-colors text-xs font-bold uppercase tracking-wide">
+                                  <CheckCircle size={16} /> Aceitar
+                                </button>
+                                <button onClick={() => {
+                                  setSuggestionDate(app.date); // Use appointment date for suggestion context
+                                  setSuggestionTime('');
+                                  setShowSuggestionModal(app);
+                                }} className="flex items-center gap-1 px-3 py-2 rounded bg-info/10 text-info border border-info/20 hover:bg-info/20 transition-colors text-xs font-bold uppercase tracking-wide">
+                                  <RefreshCcw size={16} /> Sugerir Horário
+                                </button>
+                                <button onClick={() => updateStatus(app.id, 'cancelado')} className="flex items-center gap-1 px-3 py-2 rounded bg-danger/10 text-danger border border-danger/20 hover:bg-danger/20 transition-colors text-xs font-bold uppercase tracking-wide">
+                                  <XCircle size={16} /> Recusar
+                                </button>
+                              </>
+                            )}
+                            {app.status === 'concluido' && (
+                              <button 
+                                onClick={() => releaseClient(app.clientName)} 
+                                className="text-xs px-3 py-1 bg-surfaceHover rounded text-textSecondary hover:text-primary border border-transparent hover:border-primary"
+                              >
+                                Liberar Cliente (Reset 10d)
+                              </button>
+                            )}
+                          </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            </>
+          )}
         </div>
 
         <Modal isOpen={showPasswordModal} onClose={() => setShowPasswordModal(false)} title="Alterar Senha de Admin">
@@ -969,6 +1243,59 @@ export default function App() {
                Enviar Sugestão {suggestionTime}
              </Button>
           </div>
+        </Modal>
+
+        {/* Manual Booking Modal */}
+        <Modal isOpen={showManualBookModal} onClose={() => setShowManualBookModal(false)} title="Agendamento Manual">
+           <div className="space-y-4">
+             <Input 
+               label="Nome do Cliente" 
+               value={manualClientName} 
+               onChange={(e: any) => setManualClientName(e.target.value)} 
+             />
+             
+             <div className="mb-2">
+                <label className="text-sm text-textSecondary font-medium mb-1.5 block">Data</label>
+                <input 
+                  type="date" 
+                  min={new Date().toISOString().split('T')[0]}
+                  value={selectedDate}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                  className="w-full bg-surface border border-surfaceHover rounded-lg px-4 py-3 text-text focus:border-primary focus:ring-1 focus:ring-primary [color-scheme:dark]"
+                />
+             </div>
+
+             {selectedDate && (
+                <div className="mb-4">
+                  <label className="text-sm text-textSecondary font-medium mb-1.5 block">Horário</label>
+                  <div className="grid grid-cols-4 gap-2 max-h-40 overflow-y-auto">
+                    {generateTimeSlots(selectedDate).map(time => {
+                      const isTaken = isSlotBooked(selectedDate, time);
+                      return (
+                        <button
+                          key={time}
+                          onClick={() => !isTaken && setSelectedTime(time)}
+                          disabled={isTaken}
+                          className={`py-2 rounded border text-xs transition-all ${
+                            isTaken 
+                              ? 'bg-surface border-transparent text-textSecondary line-through cursor-not-allowed opacity-50' 
+                              : selectedTime === time 
+                                ? 'bg-primary text-background border-primary font-bold' 
+                                : 'bg-surfaceHover border-transparent text-text hover:border-primary/50'
+                          }`}
+                        >
+                          {time}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+             )}
+
+             <Button onClick={handleManualBooking} disabled={!manualClientName || !selectedDate || !selectedTime}>
+               Criar Agendamento
+             </Button>
+           </div>
         </Modal>
 
       </div>

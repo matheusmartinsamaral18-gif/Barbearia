@@ -28,4 +28,6 @@ export interface ShopSettings {
   blockedDates: string[];
   workDays: number[];
   releasedClients?: string[];
+  lunchStart?: string;
+  lunchEnd?: string;
 }
